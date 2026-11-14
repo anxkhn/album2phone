@@ -39,7 +39,7 @@ sequenceDiagram
 
 - **Original files.** You get the same HEIC, JPEG, MOV and MP4 files the iPhone uploaded, at full resolution. These are the unedited originals, so edits made in Apple Photos are not applied.
 - **Safe to stop.** A file downloads to a hidden `.name.part` file first. It gets its real name only after its size matches what iCloud reports. Run the same command again and it skips everything already complete.
-- **Fresh links.** Apple's download links expire after about an hour, so the tool lists the album again every 40 minutes.
+- **Fresh links.** Apple's download links expire about 15 minutes after the album is listed. The tool reads each link's expiry time and lists the album again shortly before it.
 - **Correct dates.** Each file's modified time is set to when the photo was taken, so the phone's gallery sorts it in the right place.
 - **Live Photos.** The motion part of a Live Photo goes to a `Live Photo clips` subfolder, so it doesn't show up as a separate video in your main folder.
 - **Duplicates.** Items added to the album twice download once. Repeat uploads of the same file are skipped too, see [duplicates](#duplicates).

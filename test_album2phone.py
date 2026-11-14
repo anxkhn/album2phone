@@ -1,7 +1,7 @@
 import base64
 import hashlib
 
-from album2phone import album_token, plan
+from album2phone import EXPIRY_MARGIN, album_token, links_deadline, plan
 
 
 def master(rn, name, size, created, w=4032, h=3024, clip=None):
@@ -66,3 +66,8 @@ def test_plan():
 
     files, dups = plan(records, "/d", live=False, dedupe=False)
     assert dups == 0 and len(files) == 6 and not any("Live Photo" in f["path"] for f in files)
+
+
+def test_links_deadline():
+    files = [{"url": "https://x/a?o=1&e=2000&k=2"}, {"url": "https://x/b?e=1500"}]
+    assert links_deadline(files) == 1500 - EXPIRY_MARGIN

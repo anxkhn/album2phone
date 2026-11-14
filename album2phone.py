@@ -31,8 +31,8 @@ CHROME_PATHS = [
     "chromium-browser",
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
 ]
-# Apple's signed download links expire about an hour after listing.
-LINK_LIFETIME = 40 * 60
+# Stop starting downloads this long before Apple's signed links expire.
+EXPIRY_MARGIN = 120
 LIVE_FOLDER = "Live Photo clips"
 EXPIRED = "expired"
 
@@ -76,6 +76,12 @@ def album_token(link):
 
 def field(record, name, default=None):
     return record["fields"].get(name, {}).get("value", default)
+
+
+def links_deadline(files):
+    """Apple's download links carry their expiry (about 15 minutes out) in the e= parameter."""
+    expiries = [int(m.group(1)) for f in files if (m := re.search(r"[?&]e=(\d+)", f["url"]))]
+    return (min(expiries) if expiries else time.time() + 600) - EXPIRY_MARGIN
 
 
 def is_duplicate(size, created, kept):
@@ -286,7 +292,7 @@ def run(args):
                 return 0
 
             done_n, done_b = len(files) - len(todo), total - sum(f["size"] for f in todo)
-            start_b, t0, deadline, failed = done_b, time.time(), time.time() + LINK_LIFETIME, []
+            start_b, t0, deadline, failed = done_b, time.time(), links_deadline(todo), []
 
             def job(f, deadline=deadline):
                 return EXPIRED if time.time() > deadline else phone.fetch(f)
