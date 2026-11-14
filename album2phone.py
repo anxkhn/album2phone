@@ -17,7 +17,7 @@ import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
@@ -33,6 +33,20 @@ CHROME_PATHS = [
 ]
 # Stop starting downloads this long before Apple's signed links expire.
 EXPIRY_MARGIN = 120
+# Start listing fresh links this long before that, while downloads keep running.
+REFRESH_LEAD = 180
+# Only the fields plan() reads; the full records are about twice as slow to list.
+FIELDS = [
+    "filenameEnc",
+    "resOriginalRes",
+    "resOriginalVidComplRes",
+    "originalCreationDate",
+    "resOriginalWidth",
+    "resOriginalHeight",
+    "masterRef",
+    "assetDate",
+    "isDeleted",
+]
 LIVE_FOLDER = "Live Photo clips"
 EXPIRED = "expired"
 
@@ -53,10 +67,10 @@ JS_OPEN_ALBUM = """async (token) => {
           zone: r.zoneID, title: title ? title.value : token};
 }"""
 
-JS_LIST_RECORDS = """async ({url, zone}) => {
+JS_LIST_RECORDS = """async ({url, zone, fields}) => {
   let syncToken, records = [];
   while (true) {
-    const z = {zoneID: zone, reverse: false};
+    const z = {zoneID: zone, reverse: false, desiredKeys: fields};
     if (syncToken) z.syncToken = syncToken;
     const res = await (await fetch(url, {method: "POST", credentials: "include",
       headers: {"Content-Type": "text/plain"}, body: JSON.stringify({zones: [z]})})).json();
@@ -274,10 +288,13 @@ def run(args):
         if phone:
             phone.check(dest)
 
+        def list_files():
+            records = icloud_page(browser, link).evaluate(JS_LIST_RECORDS, {**album, "fields": FIELDS})
+            return plan(records, dest, live=not args.no_live, dedupe=not args.keep_duplicates)
+
         failed_last = None
         while True:
-            records = icloud_page(browser, link).evaluate(JS_LIST_RECORDS, album)
-            files, dups = plan(records, dest, live=not args.no_live, dedupe=not args.keep_duplicates)
+            files, dups = list_files()
             total = sum(f["size"] for f in files)
             print(
                 f"{album['title']}: {len(files)} files, {human(total)}, {dups} duplicates skipped -> {dest}"
@@ -292,30 +309,45 @@ def run(args):
                 return 0
 
             done_n, done_b = len(files) - len(todo), total - sum(f["size"] for f in todo)
-            start_b, t0, deadline, failed = done_b, time.time(), links_deadline(todo), []
+            start_b, t0, failed = done_b, time.time(), []
+            # Workers read the newest link and deadline, so a refresh reaches queued files.
+            links = {f["path"]: f["url"] for f in files}
+            state = {"deadline": links_deadline(files)}
 
-            def job(f, deadline=deadline):
-                return EXPIRED if time.time() > deadline else phone.fetch(f)
+            def job(f, links=links, state=state):
+                if time.time() > state["deadline"]:
+                    return EXPIRED
+                return phone.fetch({**f, "url": links[f["path"]]})
 
             with ThreadPoolExecutor(args.workers) as pool:
                 jobs = {pool.submit(job, f): f for f in todo}
-                for fut in as_completed(jobs):
-                    f, err = jobs[fut], fut.result()
-                    if err is EXPIRED:
-                        continue  # picked up next round with fresh links
-                    if err:
-                        failed.append(f["path"])
-                        print(f"\n{os.path.basename(f['path'])}: {err}")
-                        continue
-                    done_n, done_b = done_n + 1, done_b + f["size"]
-                    rate = (done_b - start_b) / max(time.time() - t0, 1)
-                    eta = (total - done_b) / rate if rate else 0
-                    print(
-                        f"\r{done_n}/{len(files)} files  {human(done_b)} / {human(total)}  "
-                        f"{rate / 1e6:.1f} MB/s  ETA {int(eta // 3600)}h {int(eta % 3600 // 60):02d}m ",
-                        end="",
-                        flush=True,
-                    )
+                while jobs:
+                    finished, _ = wait(jobs, timeout=2, return_when=FIRST_COMPLETED)
+                    for fut in finished:
+                        f, err = jobs.pop(fut), fut.result()
+                        if err is EXPIRED:
+                            continue  # retried next round with fresh links
+                        if err:
+                            failed.append(f["path"])
+                            print(f"\n{os.path.basename(f['path'])}: {err}")
+                            continue
+                        done_n, done_b = done_n + 1, done_b + f["size"]
+                        rate = (done_b - start_b) / max(time.time() - t0, 1)
+                        eta = (total - done_b) / rate if rate else 0
+                        print(
+                            f"\r{done_n}/{len(files)} files  {human(done_b)} / {human(total)}  "
+                            f"{rate / 1e6:.1f} MB/s  ETA {int(eta // 3600)}h {int(eta % 3600 // 60):02d}m ",
+                            end="",
+                            flush=True,
+                        )
+                    if jobs and time.time() > state["deadline"] - REFRESH_LEAD:
+                        try:
+                            fresh, _ = list_files()
+                        except PlaywrightError as e:
+                            print(f"\nCould not refresh links, retrying: {str(e)[:200]}")
+                            continue
+                        links.update({f["path"]: f["url"] for f in fresh})
+                        state["deadline"] = links_deadline(fresh)
             print()
             if failed and failed == failed_last:
                 print(f"{len(failed)} files keep failing. Run again later to retry them.")
