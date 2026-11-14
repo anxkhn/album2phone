@@ -1,0 +1,24 @@
+[project]
+name = "album2phone"
+version = "0.1.0"
+description = "Download an iCloud shared album straight onto an Android phone over ADB, in original quality."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["playwright>=1.40"]
+
+[project.scripts]
+album2phone = "album2phone:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["album2phone"]
+
+[tool.ruff]
+line-length = 110
